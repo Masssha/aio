@@ -2,25 +2,30 @@ import datetime
 import os
 import atexit
 
-from sqlalchemy import create_engine, String, DateTime, Integer, func, ForeignKey
-from sqlalchemy.orm import sessionmaker, DeclarativeBase, mapped_column, Mapped
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncAttrs
+from sqlalchemy import  String, DateTime, Integer, func, ForeignKey
+from sqlalchemy.orm import  DeclarativeBase, mapped_column, Mapped
 
 
 POSTGRES_PASSWORD = os.getenv('POSTGRES_PASSWORD', 'LLllMMmmqwerty654321')
 POSTGRES_USER = os.getenv('POSTGRES_USER', 'postgres')
-POSTGRES_DB = os.getenv('POSTGRES_DB', 'posts')
+POSTGRES_DB = os.getenv('POSTGRES_DB', 'posts_aio')
 POSTGRES_HOST = os.getenv('POSTGRES_HOST', '127.0.0.1')
-POSTGRES_PORT = os.getenv('POSTGRES_PORT', '5439')
+POSTGRES_PORT = os.getenv('POSTGRES_PORT', '5444')
 
-PG_DSN = f'postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}'
+PG_DSN = f'postgresql+asyncpg://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}'
 
-engine = create_engine(PG_DSN)
+engine = create_async_engine(PG_DSN)
 
-atexit.register(engine.dispose)
+Session = async_sessionmaker(engine, expire_on_commit=False)
 
-Session = sessionmaker(bind=engine)
+# engine = create_engine(PG_DSN)
+#
+# atexit.register(engine.dispose)
+#
+# Session = sessionmaker(bind=engine)
 
-class Base(DeclarativeBase):
+class Base(DeclarativeBase, AsyncAttrs):
     pass
 
 class User(Base):
@@ -55,8 +60,8 @@ class Post(Base):
             'description': self.description,
             'owner_id': self.owner_id,
             'owner_name': self.owner_name,
-            'registration_time': self.registration_time.isoformat()
+            'registration_time': int[self.registration_time.timestamp()]
         }
 
 
-Base.metadata.create_all(bind=engine)
+# Base.metadata.create_all(bind=engine)

@@ -1,128 +1,143 @@
 from aiohttp import web
+from models import User, Post, Session, engine, Base
+import json
+from sqlalchemy.exc import IntegrityError
+
+
 app = web.Application()
 
-# async def get_user(request: web.Request) -> web.Response:
-#     # json_data = await request.json()
-#     return web.json_response({'sss': 'ddd'})
-#
-# app.add_routes(
-#     [web.get('/user', get_user)]
-# )
-
-@app.before_request
-def before_request():
-    session = Session()
-    request.session = session
+async def orm_context(app):
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield
+    await engine.dispose()
 
 
-@app.after_request
-def after_request(request: web.Request) -> web.Response:
-    request.session.close()
-    return response
+app.cleanup_ctx.append(orm_context)
 
 
-class HttpError(Exception):
-    def __init__(self, status_code, message):
-        self.status_code = status_code
-        self.message = message
+def get_http_error(error_class, message):
+    response = json.dump({'error': message})
+    http_error = error_class(text=response, content_type='application/json')
+    return http_error
 
 
-@app.errorhandler(HttpError)
-def error_handled(err: HttpError):
-    json_response = jsonify({'status': 'error', 'message': err.message})
-    json_response.status_code = err.status_code
-    return json_response
-
-
-def validate(schema, json_data):
-    try:
-        return schema(**json_data).dict(exclude_unset=True)
-    except ValidationError as err:
-        error = err.errors()[0]
-        error.pop('ctx', None)
-        raise HttpError(400, error)
-
-
-def get_user(user_id):
-    user = request.session.query(User).get(user_id)
+async def get_user_by_id(session, user_id):
+    user = await session.get(User, user_id)
     if user is None:
-        raise HttpError(status_code=404, message='user does not exists')
+        error = get_http_error(web.HTTPNot.Found, f'user with id {user_id} is not found')
+        raise error
     return user
 
 
-def add_user(user):
+async def add_user(session, user):
     try:
-        request.session.add(user)
-        request.session.commit()
+        session.add(user)
+        await session.commit()
         return user
     except IntegrityError as err:
-        raise HttpError(status_code=409, message='user already existsss')
+        await session.rollback()
+        raise get_http_error(web.HTTPConflict, message=f'user with name {user.name} already exists')
 
 
-def get_post(post_id):
-    post = request.session.query(Post).get(post_id)
+@web.middleware
+async def session_mmiddleware(request, handler):
+    async with Session() as session:
+        request.session = session
+        response = handler(request)
+        return response
+
+web.middleware.append(session_mmiddleware)
+
+
+async def get_post_by_id(session, post_id):
+    post = await session.get(Post, post_id)
+    if post is None:
+        error = get_http_error(web.HTTPNot.Found, f'post with id {post_id} is not found')
+        raise error
     return post
 
 
-def add_post(post):
-    request.session.add(post)
-    request.session.commit()
+async def add_post(session, post):
+    session.add(post)
+    await session.commit()
     return post
 
 
 
-class UserView(MethodView):
-
-    def get(self, user_id: int):
-        user = get_user(user_id)
-        return jsonify(user.dict)
+class UserView(web.View):
 
 
-    def post(self):
-        user_data = request.json
+    @property
+    def user_id(self):
+        return int(self.request.match_info('user_id'))
+
+
+    async def get_user(self):
+        user = get_user_by_id(self.request.sesson, self.user_id)
+        return user
+
+
+    async def get(self):
+        user = await self.get_user()
+        return web.json_response(user.dict)
+
+
+    async def post(self):
+        user_data = self.request.json()
         user = User(name=user_data['name'])
-        add_user(user)
-        return jsonify(user.dict)
-
-class PostView(MethodView):
-
-    def get(self, post_id: int):
-        post = get_post(post_id)
-        return jsonify(post.dict)
+        await add_user(self.session, user)
+        return web.json_response(user.dict)
 
 
-    def post(self):
-        post_data = request.json
-        new_post_data = validate(CreatePost, post_data)
+
+class PostView(web.View):
+
+    @property
+    def post_id(self):
+        return int(self.request.match_info('post_id'))
+
+
+    async def get_post(self):
+        post = get_post_by_id(self.request.sesson, self.post_id)
+        return post
+
+
+    async def get(self):
+        post = await self.get_post()
+        return web.json_response(post.dict)
+
+
+    async def post(self):
+        post_data = self.request.json()
         post = Post(title=post_data['title'], description=post_data['description'], owner_id=post_data['owner_id'], owner_name=post_data['owner_name'])
-        add_post(post)
-        return jsonify(post.dict)
+        await add_post(self.session, post)
+        return web.json_response(post.dict)
 
 
-    def patch(self, post_id: int):
-        post_data = request.json
-        # user_data = validate(UpdateUser, user_data)
-        post = get_post(post_id)
+    async def patch(self):
+        post_data = self.request.json()
+        post = await self.get_post()
         for field, value in post_data.items():
             setattr(post, field, value)
-        add_post(post)
-        return jsonify(post.dict)
+        await add_post(self.session, post)
+        return web.json_response(post.dict)
 
 
-    def delete(self, post_id: int):
-        post = get_post(post_id)
-        request.session.delete(post)
-        request.session.commit()
-        return jsonify({'status': 'deleted'})
+    async def delete(self):
+        post = await self.get_post()
+        await self.session.delete(post)
+        await self.session.commit()
+        return web.json_response({'status': 'deleted'})
 
 
 app.add_routes(
-    [web.post('/user/', user_view)],
-    [web.get('/user/<int:user_id>', user_view)],
-    [web.post('/post/', post_view)],
-    [web.get('/post/<int:post_id>/', post_view)],
-    [web.delete('/post/<int:post_id>/', post_view)],
-    [web.patch('/post/<int:post_id>/', post_view)]
-)
+[web.post('/user/', UserView),
+web.get('/user/{user_id:\d+}', UserView),
+web.post('/post/', PostView),
+web.get('/post/{post_id:\d+}/', PostView),
+web.delete('/post/{post_id:\d+}/', PostView),
+web.patch('/post/{post_id:\d+}/', PostView)])
+
 
 web.run_app(app)
