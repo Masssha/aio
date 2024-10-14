@@ -19,11 +19,6 @@ engine = create_async_engine(PG_DSN)
 
 Session = async_sessionmaker(engine, expire_on_commit=False)
 
-# engine = create_engine(PG_DSN)
-#
-# atexit.register(engine.dispose)
-#
-# Session = sessionmaker(bind=engine)
 
 class Base(DeclarativeBase, AsyncAttrs):
     pass
@@ -63,5 +58,3 @@ class Post(Base):
             'registration_time': int[self.registration_time.timestamp()]
         }
 
-
-# Base.metadata.create_all(bind=engine)
